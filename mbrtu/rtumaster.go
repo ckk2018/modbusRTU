@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"sync"
 
 	"github.com/tarm/serial"
 
@@ -20,6 +21,7 @@ const (
 // RtuMaster modbus主站结构
 type RtuMaster struct {
 	s           *serial.Port
+	l           *sync.Mutex
 	reqCrcOrder binary.ByteOrder // 最后一次请求的crc16校验码字节序
 	reqFunCode  global.FunCode   // 最后一次请求的功能码
 	reqExpLen   int              // 最后一次请求的期望返回报文字节长度
@@ -32,7 +34,7 @@ func NewRtuMaster(c *serial.Config) (*RtuMaster, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &RtuMaster{s: s}, nil
+	return &RtuMaster{s: s, l: new(sync.Mutex)}, nil
 }
 
 // Close 关闭主站
@@ -40,8 +42,9 @@ func (m *RtuMaster) Close() error {
 	return m.s.Close()
 }
 
-// Write 向串口写数据
-func (m *RtuMaster) Write(r request.RtuRequest, crcOrder binary.ByteOrder) (int, error) {
+// 将请求转为报文写入串口
+// 记录请求的相关参数
+func (m *RtuMaster) write(r request.RtuRequest, crcOrder binary.ByteOrder) (int, error) {
 	buf := bytes.NewBuffer(make([]byte, 0, 8))
 	err := r.Serialize(buf, crcOrder)
 	if err != nil {
@@ -57,7 +60,7 @@ func (m *RtuMaster) Write(r request.RtuRequest, crcOrder binary.ByteOrder) (int,
 	return n, nil
 }
 
-// 将超时也作为异常抛出
+// 将串口读取超时也作为异常抛出
 func (m *RtuMaster) _read(p []byte) (int, error) {
 	n, err := m.s.Read(p)
 	if err != nil {
@@ -69,8 +72,9 @@ func (m *RtuMaster) _read(p []byte) (int, error) {
 	return n, nil
 }
 
-// Read 读取串口数据
-func (m *RtuMaster) Read(p []byte) (int, error) {
+// 读取串口数据
+// 包含crc校验和对读取数据的截取
+func (m *RtuMaster) read(p []byte) (int, error) {
 	read := 0
 	raw := make([]byte, 1024)
 
@@ -110,43 +114,55 @@ func (m *RtuMaster) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-// ---- 组合 `Read` 和 `Write` 的高级方法 ----
+// BaseReadWrite 基础的modbus通信函数
+func (m *RtuMaster) BaseReadWrite(p []byte, r request.RtuRequest, crcOrder binary.ByteOrder) (int, error) {
+	m.l.Lock()
+	defer m.l.Unlock()
+
+	_, err := m.write(r, crcOrder)
+	if err != nil {
+		return 0, err
+	}
+
+	return m.read(p)
+}
+
 // ---- 标准mbrtu ----
 
 // ReadCoils 读取线圈
 func (m *RtuMaster) ReadCoils(p []byte, addr byte, offset, num uint16, crcOrder binary.ByteOrder) (int, error) {
-	_, err := m.Write(request.NewRtuReadRequest(addr, global.ReadCoils, offset, num), crcOrder)
-	if err != nil {
-		return 0, err
-	}
-	return m.Read(p)
+	return m.BaseReadWrite(
+		p,
+		request.NewRtuReadRequest(addr, global.ReadCoils, offset, num),
+		crcOrder,
+	)
 }
 
 // ReadInputs 读取输出
 func (m *RtuMaster) ReadInputs(p []byte, addr byte, offset, num uint16, crcOrder binary.ByteOrder) (int, error) {
-	_, err := m.Write(request.NewRtuReadRequest(addr, global.ReadInputs, offset, num), crcOrder)
-	if err != nil {
-		return 0, err
-	}
-	return m.Read(p)
+	return m.BaseReadWrite(
+		p,
+		request.NewRtuReadRequest(addr, global.ReadInputs, offset, num),
+		crcOrder,
+	)
 }
 
 // ReadHoldingRegisters 读取保持寄存器
 func (m *RtuMaster) ReadHoldingRegisters(p []byte, addr byte, offset, num uint16, crcOrder binary.ByteOrder) (int, error) {
-	_, err := m.Write(request.NewRtuReadRequest(addr, global.ReadHoldingRegisters, offset, num), crcOrder)
-	if err != nil {
-		return 0, err
-	}
-	return m.Read(p)
+	return m.BaseReadWrite(
+		p,
+		request.NewRtuReadRequest(addr, global.ReadHoldingRegisters, offset, num),
+		crcOrder,
+	)
 }
 
 // ReadInputRegisters 读取输入寄存器
 func (m *RtuMaster) ReadInputRegisters(p []byte, addr byte, offset, num uint16, crcOrder binary.ByteOrder) (int, error) {
-	_, err := m.Write(request.NewRtuReadRequest(addr, global.ReadInputRegisters, offset, num), crcOrder)
-	if err != nil {
-		return 0, err
-	}
-	return m.Read(p)
+	return m.BaseReadWrite(
+		p,
+		request.NewRtuReadRequest(addr, global.ReadInputRegisters, offset, num),
+		crcOrder,
+	)
 }
 
 // WriteSingleCoil 写单个线圈
@@ -155,21 +171,21 @@ func (m *RtuMaster) WriteSingleCoil(addr byte, offset uint16, on bool, crcOrder 
 	if on {
 		data = 0xff00
 	}
-	_, err := m.Write(request.NewRtuWriteSingleRequest(addr, global.WriteSingleCoil, offset, data), crcOrder)
-	if err != nil {
-		return err
-	}
-	_, err = m.Read(make([]byte, 0))
+	_, err := m.BaseReadWrite(
+		nil,
+		request.NewRtuWriteSingleRequest(addr, global.WriteSingleCoil, offset, data),
+		crcOrder,
+	)
 	return err
 }
 
 // WriteSingleRegister 写单个保持寄存器
 func (m *RtuMaster) WriteSingleRegister(addr byte, offset uint16, data uint16, crcOrder binary.ByteOrder) error {
-	_, err := m.Write(request.NewRtuWriteSingleRequest(addr, global.WriteSingleRegister, offset, data), crcOrder)
-	if err != nil {
-		return err
-	}
-	_, err = m.Read(make([]byte, 0))
+	_, err := m.BaseReadWrite(
+		nil,
+		request.NewRtuWriteSingleRequest(addr, global.WriteSingleRegister, offset, data),
+		crcOrder,
+	)
 	return err
 }
 
@@ -184,21 +200,21 @@ func (m *RtuMaster) WriteMultiCoils(addr byte, offset uint16, on []bool, crcOrde
 			data[idx] += 1 << (i - 8*idx)
 		}
 	}
-	_, err := m.Write(request.NewRtuWriteMultiCoilsRequest(addr, offset, uint16(coilNum), data), crcOrder)
-	if err != nil {
-		return err
-	}
-	_, err = m.Read(make([]byte, 0))
+	_, err := m.BaseReadWrite(
+		nil,
+		request.NewRtuWriteMultiCoilsRequest(addr, offset, uint16(coilNum), data),
+		crcOrder,
+	)
 	return err
 }
 
 // WriteMultiRegisters 写多个保持寄存器
 func (m *RtuMaster) WriteMultiRegisters(addr byte, offset uint16, data []uint16, crcOrder binary.ByteOrder) error {
-	_, err := m.Write(request.NewRtuWriteMultiRegsRequest(addr, offset, data), crcOrder)
-	if err != nil {
-		return err
-	}
-	_, err = m.Read(make([]byte, 0))
+	_, err := m.BaseReadWrite(
+		nil,
+		request.NewRtuWriteMultiRegsRequest(addr, offset, data),
+		crcOrder,
+	)
 	return err
 }
 
@@ -206,10 +222,10 @@ func (m *RtuMaster) WriteMultiRegisters(addr byte, offset uint16, data []uint16,
 
 // NRWriteMultiRegisters 写多个保持寄存器
 func (m *RtuMaster) NRWriteMultiRegisters(addr byte, offset uint16, data []uint16, crcOrder binary.ByteOrder) error {
-	_, err := m.Write(request.NewNRWriteMultiRegsRequest(addr, offset, data), crcOrder)
-	if err != nil {
-		return err
-	}
-	_, err = m.Read(make([]byte, 0))
+	_, err := m.BaseReadWrite(
+		nil,
+		request.NewNRWriteMultiRegsRequest(addr, offset, data),
+		crcOrder,
+	)
 	return err
 }

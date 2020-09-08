@@ -1,8 +1,12 @@
 # Binaries for programs and plugins
 *.exe
 *.exe~
+*.dll
 *.so
 *.dylib
+
+# 自动生成的文件
+*.h
 
 # Test binary, built with `go test -c`
 *.test
