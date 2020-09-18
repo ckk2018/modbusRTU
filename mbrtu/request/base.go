@@ -11,3 +11,8 @@ type base struct {
 	fun    global.FunCode // 功能码
 	offset uint16         // 偏移量
 }
+
+// FunCode 请求的功能码
+func (b base) FunCode() global.FunCode {
+	return b.fun
+}

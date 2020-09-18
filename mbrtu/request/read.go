@@ -37,11 +37,6 @@ func (r *RtuReadRequest) Serialize(buf *bytes.Buffer, crcOrder binary.ByteOrder)
 	return binary.Write(buf, crcOrder, crc16)
 }
 
-// FunCode 功能码
-func (r *RtuReadRequest) FunCode() global.FunCode {
-	return r.fun
-}
-
 // ExpectedLen 期望的返回报文字节长度
 func (r *RtuReadRequest) ExpectedLen() int {
 	var dataLen int

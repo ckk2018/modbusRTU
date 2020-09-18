@@ -55,11 +55,6 @@ func (r *RtuWriteMultiCoilsRequest) Serialize(buf *bytes.Buffer, crcOrder binary
 	return binary.Write(buf, crcOrder, crc16)
 }
 
-// FunCode 功能码
-func (r *RtuWriteMultiCoilsRequest) FunCode() global.FunCode {
-	return r.fun
-}
-
 // ExpectedLen 期望的返回报文字节长度
 func (r *RtuWriteMultiCoilsRequest) ExpectedLen() int {
 	return 8
@@ -103,11 +98,6 @@ func (r *RtuWriteMultiRegsRequest) Serialize(buf *bytes.Buffer, crcOrder binary.
 	}
 	crc16 := mbcrc.Crc16(buf.Bytes())
 	return binary.Write(buf, crcOrder, crc16)
-}
-
-// FunCode 功能码
-func (r *RtuWriteMultiRegsRequest) FunCode() global.FunCode {
-	return r.fun
 }
 
 // ExpectedLen 期望的返回报文字节长度
